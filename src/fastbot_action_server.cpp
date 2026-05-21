@@ -1,8 +1,3 @@
-// ============================================================
-//  fastbot_action_server.cpp
-//  ROS2 C++ port — adapted for fastbot_waypoints / fastbot_msgs
-// ============================================================
-
 #include <cmath>
 #include <memory>
 #include <string>
@@ -16,14 +11,10 @@
 #include "tf2/LinearMath/Matrix3x3.h"
 #include "tf2/LinearMath/Quaternion.h"
 
-// ── Fix 1: include correto para fastbot_msgs ─────────────────
 #include "fastbot_msgs/action/waypoint_action.hpp"
 
 class WaypointActionServer : public rclcpp::Node {
 public:
-  // ── Fix 1 (continuação): namespace correto ────────────────
-  // Era: tortoisebot_waypoints::action::WaypointAction  ← ERRADO
-  // É:   fastbot_msgs::action::WaypointAction           ← CORRETO
   using WaypointAction = fastbot_msgs::action::WaypointAction;
   using GoalHandle = rclcpp_action::ServerGoalHandle<WaypointAction>;
 
@@ -80,11 +71,6 @@ private:
     _yaw = yaw;
   }
 
-  // ── Fix 2: assinatura DEVE ter 2 parâmetros ───────────────
-  // Era: _handle_goal(const rclcpp_action::GoalUUID &)
-  //      → "Wrong number of arguments for pointer-to-member"
-  // É:   _handle_goal(const rclcpp_action::GoalUUID &,
-  //                   std::shared_ptr<const WaypointAction::Goal>)
   rclcpp_action::GoalResponse
   _handle_goal(const rclcpp_action::GoalUUID &,
                std::shared_ptr<const WaypointAction::Goal> goal) {
@@ -128,10 +114,8 @@ private:
 
     const geometry_msgs::msg::Point des_pos = goal->position;
 
-    double desired_yaw =
-        std::atan2(des_pos.y - _position.y, des_pos.x - _position.x);
-    double err_pos =
-        std::hypot(des_pos.x - _position.x, des_pos.y - _position.y);
+    double desired_yaw = std::atan2(des_pos.y - _position.y, des_pos.x - _position.x);
+    double err_pos = std::hypot(des_pos.x - _position.x, des_pos.y - _position.y);
     double err_yaw = _normalize_angle(desired_yaw - _yaw);
 
     RCLCPP_INFO(this->get_logger(),
@@ -141,8 +125,7 @@ private:
                 desired_yaw * 180.0 / M_PI);
 
     while (err_pos > _dist_precision && rclcpp::ok()) {
-      desired_yaw =
-          std::atan2(des_pos.y - _position.y, des_pos.x - _position.x);
+      desired_yaw = std::atan2(des_pos.y - _position.y, des_pos.x - _position.x);
       err_yaw = _normalize_angle(desired_yaw - _yaw);
       err_pos = std::hypot(des_pos.x - _position.x, des_pos.y - _position.y);
 

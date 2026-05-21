@@ -1,5 +1,3 @@
-// Copyright 2024 Fastbot — Licensed under Apache 2.0
-
 #include "fastbot_msgs/action/waypoint_action.hpp"
 #include "nav_msgs/msg/odometry.hpp"
 #include <gtest/gtest.h>
@@ -24,8 +22,8 @@
 using namespace std::chrono_literals;
 using WaypointAction = fastbot_msgs::action::WaypointAction;
 
-constexpr double TARGET_X = 0.05;
-constexpr double TARGET_Y = 0.05;
+constexpr double TARGET_X = 5.05;
+constexpr double TARGET_Y = 5.05;
 constexpr double MAP_RADIUS = 5.0;
 constexpr double POSITION_TOLERANCE = 0.10;
 constexpr double YAW_TOLERANCE = 0.50;
@@ -38,171 +36,6 @@ static double normalize_angle(double a) {
   return a;
 }
 
-// =============================================================================
-//  ResultPatchListener
-//
-//  Patches the GTest XML after the run to achieve correct colcon reporting:
-//
-//    Problem 1 — GTest 1.10 never emits <skipped/> for GTEST_SKIP() tests.
-//                colcon reads <skipped/> to count skips → always "0 skipped".
-//
-//    Problem 2 — GTest always emits <failure> even for unhandled exceptions.
-//                colcon distinguishes <failure> ("failures") from <error>
-//                ("errors"). We want infrastructure / out-of-map errors to
-//                appear as "errors", not "failures".
-//
-//  After RUN_ALL_TESTS() flushes the XML file, this listener:
-//    • Converts <failure …/> → <error …/> for tests that threw exceptions.
-//    • Adds <skipped/> for tests that called GTEST_SKIP().
-//    • Updates the <testsuite errors="…" failures="…" skipped="…"> counts.
-// =============================================================================
-class ResultPatchListener : public ::testing::EmptyTestEventListener {
-public:
-  explicit ResultPatchListener(std::string path) : path_(std::move(path)) {}
-
-  void OnTestStart(const ::testing::TestInfo &info) override {
-    current_ = info.name();
-    threw_ = false;
-  }
-
-  void OnTestPartResult(const ::testing::TestPartResult &r) override {
-    using R = ::testing::TestPartResult;
-    if (r.type() == R::kSkip) {
-      skipped_.push_back({current_, r.message() ? r.message() : ""});
-    }
-    // GTest reports caught exceptions as kFatalFailure with a message that
-    // starts with "C++ exception with description". Track those separately
-    // so we can convert them from <failure> to <error> in the XML.
-    if ((r.type() == R::kFatalFailure || r.type() == R::kNonFatalFailure) &&
-        r.message() &&
-        std::string(r.message()).find("C++ exception") != std::string::npos) {
-      error_tests_.insert(current_);
-      threw_ = true;
-    }
-  }
-
-  void OnTestProgramEnd(const ::testing::UnitTest &) override {
-    if (path_.empty())
-      return;
-
-    std::ifstream in(path_);
-    if (!in)
-      return;
-    std::string xml((std::istreambuf_iterator<char>(in)), {});
-    in.close();
-
-    // ── 1. Convert <failure> → <error> for exception-throwing tests ──────
-    for (const auto &name : error_tests_) {
-      replace_element_in_testcase(xml, name, "failure", "error");
-    }
-
-    // ── 2. Add <skipped/> for GTEST_SKIP() tests ─────────────────────────
-    for (const auto &s : skipped_) {
-      // GTest 1.10 emits:  <testcase name="X" status="notrun" … />
-      // We replace the /> with:  ><skipped message="…"/></testcase>
-      const std::string needle = "name=\"" + s.name + "\" status=\"notrun\"";
-      auto pos = xml.find(needle);
-      if (pos == std::string::npos)
-        continue;
-      auto end = xml.find("/>", pos);
-      if (end == std::string::npos)
-        continue;
-      xml.replace(end, 2,
-                  "><skipped message=\"" + esc(s.message) + "\"/></testcase");
-    }
-
-    // ── 3. Update <testsuite errors="…" failures="…" skipped="…"> ────────
-    set_attr(xml, "errors", error_tests_.size());
-    // failures = total failures minus those we reclassified as errors
-    size_t orig_failures = count_elements(xml, "<failure");
-    set_attr(xml, "failures", orig_failures); // already patched above
-    set_attr(xml, "skipped", skipped_.size());
-
-    std::ofstream out(path_);
-    out << xml;
-  }
-
-private:
-  struct Skip {
-    std::string name, message;
-  };
-
-  std::string path_, current_;
-  bool threw_ = false;
-  std::vector<Skip> skipped_;
-  std::set<std::string> error_tests_;
-
-  // Replace the first <failure …> block inside the <testcase name="N"> with
-  // <error …>
-  static void replace_element_in_testcase(std::string &xml,
-                                          const std::string &test_name,
-                                          const std::string &from,
-                                          const std::string &to) {
-    const std::string tc_marker = "name=\"" + test_name + "\"";
-    auto tc = xml.find(tc_marker);
-    if (tc == std::string::npos)
-      return;
-
-    // opening tag
-    auto open = xml.find("<" + from, tc);
-    if (open == std::string::npos)
-      return;
-    xml.replace(open, 1 + from.size(), "<" + to);
-
-    // closing tag (self-closing or explicit)
-    // After replacement the opening tag size changed by (to.size()-from.size())
-    size_t delta = to.size() > from.size() ? to.size() - from.size() : 0;
-    auto close = xml.find("</" + from, open + delta);
-    if (close != std::string::npos)
-      xml.replace(close, 2 + from.size(), "</" + to);
-  }
-
-  static size_t count_elements(const std::string &xml, const std::string &tag) {
-    size_t count = 0, pos = 0;
-    while ((pos = xml.find(tag, pos)) != std::string::npos) {
-      ++count;
-      ++pos;
-    }
-    return count;
-  }
-
-  static void set_attr(std::string &xml, const std::string &attr,
-                       size_t value) {
-    auto pos = xml.find(attr + "=\"");
-    if (pos == std::string::npos)
-      return;
-    auto s = pos + attr.size() + 2;
-    auto e = xml.find('"', s);
-    if (e != std::string::npos)
-      xml.replace(s, e - s, std::to_string(value));
-  }
-
-  static std::string esc(const std::string &s) {
-    std::string r;
-    for (char c : s)
-      switch (c) {
-      case '&':
-        r += "&amp;";
-        break;
-      case '<':
-        r += "&lt;";
-        break;
-      case '>':
-        r += "&gt;";
-        break;
-      case '"':
-        r += "&quot;";
-        break;
-      default:
-        r += c;
-      }
-    return r;
-  }
-};
-
-// =============================================================================
-//  Test fixture
-// =============================================================================
 class WaypointTest : public ::testing::Test {
 public:
   static void SetUpTestSuite() {
@@ -248,7 +81,7 @@ public:
           node_->get_logger(),
           "Goal (%.4f,%.4f) outside MAP_RADIUS %.1f — navigation skipped",
           goal_x_, goal_y_, MAP_RADIUS);
-      return; // no setup_error_msg_ → Position throws (error), Yaw skips
+      return;
     }
 
     action_client_ = rclcpp_action::create_client<WaypointAction>(
@@ -350,6 +183,7 @@ public:
   static double start_pose_x_, start_pose_y_;
   static double final_x_, final_y_, final_yaw_;
   static double goal_x_, goal_y_;
+  static bool first_test_failure_;
 };
 
 rclcpp::Node::SharedPtr WaypointTest::node_;
@@ -370,73 +204,43 @@ double WaypointTest::start_pose_x_ = 0, WaypointTest::start_pose_y_ = 0;
 double WaypointTest::final_x_ = 0, WaypointTest::final_y_ = 0,
        WaypointTest::final_yaw_ = 0;
 double WaypointTest::goal_x_ = 0, WaypointTest::goal_y_ = 0;
+bool WaypointTest::first_test_failure_ = false;
 
 // =============================================================================
 //  TEST 1 — End position
-//  throw → GTest reports <failure type=""> with "C++ exception" message
-//         → ResultPatchListener converts it to <error> in the XML
 // =============================================================================
 TEST_F(WaypointTest, TestEndPosition) {
   checkSetup();
   const double err = std::hypot(goal_x_ - final_x_, goal_y_ - final_y_);
-  if (err > POSITION_TOLERANCE) {
-    std::ostringstream m;
-    m << "Position error " << err << " m > " << POSITION_TOLERANCE << " m"
+  EXPECT_NEAR(err, 0, POSITION_TOLERANCE)
+      << "Position error " << err << " m"
       << " | final=(" << final_x_ << "," << final_y_ << ")"
       << " | goal=(" << goal_x_ << "," << goal_y_ << ")";
-    if (!coords_valid_)
-      m << " [goal was outside map — navigation skipped]";
-    throw std::runtime_error(m.str());
+  if (HasFailure()) {
+    first_test_failure_ = true;
   }
 }
 
 // =============================================================================
 //  TEST 2 — End yaw
-//  GTEST_SKIP() → ResultPatchListener adds <skipped/> to the XML
 // =============================================================================
 TEST_F(WaypointTest, TestEndYaw) {
   checkSetup();
-  if (!coords_valid_) {
-    GTEST_SKIP() << "Goal outside map — yaw test skipped "
-                    "(TestEndPosition already reports the error)";
+  if (first_test_failure_) {
+    GTEST_SKIP() << "Yaw test skipped — TestEndPosition already failed";
   }
   const double expected =
       std::atan2(goal_y_ - start_pose_y_, goal_x_ - start_pose_x_);
   const double diff = normalize_angle(final_yaw_ - expected);
-  if (std::fabs(diff) > YAW_TOLERANCE) {
-    std::ostringstream m;
-    m << "Yaw error " << std::fabs(diff) * 180 / M_PI << " deg > "
-      << YAW_TOLERANCE * 180 / M_PI << " deg"
-      << " | final=" << final_yaw_ * 180 / M_PI
-      << " | expected=" << expected * 180 / M_PI;
-    throw std::runtime_error(m.str());
-  }
+  EXPECT_NEAR(diff, 0.0, YAW_TOLERANCE)
+      << "Yaw error " << std::fabs(diff) * 180.0 / M_PI << " deg"
+      << " | final=" << final_yaw_ * 180.0 / M_PI << " deg"
+      << " | expected=" << expected * 180.0 / M_PI << " deg";
 }
 
-// =============================================================================
-//  main
-// =============================================================================
 int main(int argc, char **argv) {
-  // ── Bug Fix: parse XML path BEFORE InitGoogleTest ─────────────────────────
-  // InitGoogleTest(&argc, argv) removes --gtest_output=xml:… from argv.
-  // If we search for it afterwards the string is already gone and xml_path
-  // stays empty — the listener opens nothing and patches nothing.
-  std::string xml_path;
-  const std::string prefix = "--gtest_output=xml:";
-  for (int i = 1; i < argc; ++i) {
-    std::string a(argv[i]);
-    if (a.rfind(prefix, 0) == 0) {
-      xml_path = a.substr(prefix.size());
-      break;
-    }
-  }
-
   rclcpp::init(argc, argv);
   ::testing::InitGoogleTest(&argc, argv);
-
-  ::testing::UnitTest::GetInstance()->listeners().Append(
-      new ResultPatchListener(xml_path));
-
   const int rc = RUN_ALL_TESTS();
   rclcpp::shutdown();
   return rc;
